@@ -13,7 +13,7 @@ const LandingScreen = ({ route }) => {
   const navigation = useNavigation();
   const { userID } = route.params;
   const db = useSQLiteContext();
-//check
+
   useEffect(() => {
     fetchDailyWord();
     getVocabHistoryID();
@@ -23,18 +23,59 @@ const LandingScreen = ({ route }) => {
     setLoading(true);
     try {
       const randomWord = wordList[Math.floor(Math.random() * wordList.length)];
-      const API_KEY = "9c3b1721-9b03-4686-954c-91e9137bf51a";
-      const API_URL = `https://www.dictionaryapi.com/api/v3/references/collegiate/json/${randomWord}?key=${API_KEY}`;
-      const response = await fetch(API_URL);
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch definition for ${randomWord}`);
+      // Build a random number and call the external vocab API with the random number in the path
+      const randomNumber = Math.floor(Math.random() * 1000000); // generates 0 - 999999
+      const CUSTOM_API_URL = `https://vocabapi-d5e9fc877b51.herokuapp.com/api/vocab/${randomNumber}`;
+
+      // Try the custom API first. Expecting the API to return JSON with at least { word, definition }.
+      let fetchedWord: string | null = null;
+      let fetchedDefinition: string | null = null;
+
+      try {
+        const response = await fetch(CUSTOM_API_URL);
+        if (response.ok) {
+          const data = await response.json();
+          // Accept a few common shapes: { word, definition } or { word: "...", def: "..." } or an array
+          if (data) {
+            if (typeof data.word === "string" && typeof data.definition === "string") {
+              fetchedWord = data.word;
+              fetchedDefinition = data.definition;
+            } else if (typeof data.word === "string" && typeof data.def === "string") {
+              fetchedWord = data.word;
+              fetchedDefinition = data.def;
+            } else if (Array.isArray(data) && data[0]) {
+              // If API returned an array with structure similar to dictionary API
+              fetchedWord = data[0].word || randomWord;
+              fetchedDefinition = data[0].definition || data[0].shortdef?.[0];
+            } else if (data.word && data.shortdef) {
+              fetchedWord = data.word;
+              fetchedDefinition = Array.isArray(data.shortdef) ? data.shortdef[0] : String(data.shortdef);
+            }
+          }
+        } else {
+          console.warn(`Custom API returned status ${response.status}. Falling back.`);
+        }
+      } catch (err) {
+        console.warn("Custom API fetch failed, falling back to Merriam-Webster:", err);
       }
 
-      const data = await response.json();
-      const fetchedDefinition = data[0]?.shortdef?.[0] || "Definition not available.";
+      // If custom API didn't yield usable data, fall back to Merriam-Webster collegiate API
+      if (!fetchedWord || !fetchedDefinition) {
+        const API_KEY = "9c3b1721-9b03-4686-954c-91e9137bf51a";
+        const API_URL = `https://www.dictionaryapi.com/api/v3/references/collegiate/json/${randomWord}?key=${API_KEY}`;
+        const response = await fetch(API_URL);
 
-      setDailyWord(randomWord);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch definition for ${randomWord}`);
+        }
+
+        const data = await response.json();
+        fetchedWord = randomWord;
+        fetchedDefinition = data[0]?.shortdef?.[0] || "Definition not available.";
+      }
+
+      setDailyWord(fetchedWord);
       setDefinition(fetchedDefinition);
     } catch (error) {
       console.error("Error fetching daily word:", error);
@@ -47,7 +88,7 @@ const LandingScreen = ({ route }) => {
 
   const getVocabHistoryID = async () => {
     // gets the listID of the vocab history list
-    const vocabHistoryID = await db.getFirstAsync("SELECT listID FROM vocabLists WHERE userID = ? ORDER BY listID ASC LIMIT 1", [userID]);
+    const vocabHistoryID = await db.getFirstAsync<{ listID: number }>("SELECT listID FROM vocabLists WHERE userID = ? ORDER BY listID ASC LIMIT 1", [userID]);
     // console.log("User Vocab History ID: ", vocabHistoryID.listID); // Debugging
     setVocabHistoryID(vocabHistoryID.listID);
   }

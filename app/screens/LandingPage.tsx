@@ -5,33 +5,6 @@ import { useNavigation } from "@react-navigation/native";
 import { useSQLiteContext } from "expo-sqlite";
 import { Asset } from "expo-asset";
 
-
-const API_URL = "https://vocabapi-d5e9fc877b51.herokuapp.com/api/vocab";
-type ApiWord = { id: number; word: string; definition: string };
-
-
-async function fetchWordsFromServer(): Promise<ApiWord[]> {
-  const res = await fetch(API_URL, { headers: { "Content-Type": "application/json" } });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} – ${text}`);
-  }
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error("API did not return an array");
-  return data as ApiWord[];
-}
-
-
-function pickDailyWord(list: ApiWord[], userID: number): ApiWord {
-  if (!list.length) throw new Error("Empty word list");
-  const d = new Date();
-  const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}-${userID}`;
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-  const idx = Math.abs(h) % list.length;
-  return list[idx];
-}
-
 const LandingScreen = ({ route }) => {
   const [dailyWord, setDailyWord] = useState<string | null>(null);
   const [definition, setDefinition] = useState<string | null>(null);
@@ -46,42 +19,76 @@ const LandingScreen = ({ route }) => {
     getVocabHistoryID();
   }, []);
 
- const fetchDailyWord = async () => {
-  setLoading(true);
-  try {
- 
-    const list = await fetchWordsFromServer();
-
-
-    const chosen = pickDailyWord(list, userID);
-
-    setDailyWord(chosen.word);
-    setDefinition(chosen.definition);
-  } catch (err) {
-    console.error("Error fetching daily word from API, falling back to local list:", err);
-
+  const fetchDailyWord = async () => {
+    setLoading(true);
     try {
-      const local = (wordList as { word: string; definition: string }[]);
-      if (Array.isArray(local) && local.length) {
-        const fallback = local[Math.floor(Math.random() * local.length)];
-        setDailyWord(fallback.word);
-        setDefinition(fallback.definition);
-      } else {
-        setDailyWord("No word available");
-        setDefinition("Definition not available.");
+      const randomWord = wordList[Math.floor(Math.random() * wordList.length)];
+
+      // Build a random number and call the external vocab API with the random number in the path
+      const randomNumber = Math.floor(Math.random() * 1000000); // generates 0 - 999999
+      const CUSTOM_API_URL = `https://vocabapi-d5e9fc877b51.herokuapp.com/api/vocab/${randomNumber}`;
+
+      // Try the custom API first. Expecting the API to return JSON with at least { word, definition }.
+      let fetchedWord: string | null = null;
+      let fetchedDefinition: string | null = null;
+
+      try {
+        const response = await fetch(CUSTOM_API_URL);
+        if (response.ok) {
+          const data = await response.json();
+          // Accept a few common shapes: { word, definition } or { word: "...", def: "..." } or an array
+          if (data) {
+            if (typeof data.word === "string" && typeof data.definition === "string") {
+              fetchedWord = data.word;
+              fetchedDefinition = data.definition;
+            } else if (typeof data.word === "string" && typeof data.def === "string") {
+              fetchedWord = data.word;
+              fetchedDefinition = data.def;
+            } else if (Array.isArray(data) && data[0]) {
+              // If API returned an array with structure similar to dictionary API
+              fetchedWord = data[0].word || randomWord;
+              fetchedDefinition = data[0].definition || data[0].shortdef?.[0];
+            } else if (data.word && data.shortdef) {
+              fetchedWord = data.word;
+              fetchedDefinition = Array.isArray(data.shortdef) ? data.shortdef[0] : String(data.shortdef);
+            }
+          }
+        } else {
+          console.warn(`Custom API returned status ${response.status}. Falling back.`);
+        }
+      } catch (err) {
+        console.warn("Custom API fetch failed, falling back to Merriam-Webster:", err);
       }
-    } catch {
+
+      // If custom API didn't yield usable data, fall back to Merriam-Webster collegiate API
+      if (!fetchedWord || !fetchedDefinition) {
+        const API_KEY = "9c3b1721-9b03-4686-954c-91e9137bf51a";
+        const API_URL = `https://www.dictionaryapi.com/api/v3/references/collegiate/json/${randomWord}?key=${API_KEY}`;
+        const response = await fetch(API_URL);
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch definition for ${randomWord}`);
+        }
+
+        const data = await response.json();
+        fetchedWord = randomWord;
+        fetchedDefinition = data[0]?.shortdef?.[0] || "Definition not available.";
+      }
+
+      setDailyWord(fetchedWord);
+      setDefinition(fetchedDefinition);
+    } catch (error) {
+      console.error("Error fetching daily word:", error);
       setDailyWord("No word available");
       setDefinition("Definition not available.");
+    } finally {
+      setLoading(false);
     }
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   const getVocabHistoryID = async () => {
     // gets the listID of the vocab history list
-    const vocabHistoryID = await db.getFirstAsync("SELECT listID FROM vocabLists WHERE userID = ? ORDER BY listID ASC LIMIT 1", [userID]);
+    const vocabHistoryID = await db.getFirstAsync<{ listID: number }>("SELECT listID FROM vocabLists WHERE userID = ? ORDER BY listID ASC LIMIT 1", [userID]);
     // console.log("User Vocab History ID: ", vocabHistoryID.listID); // Debugging
     setVocabHistoryID(vocabHistoryID.listID);
   }

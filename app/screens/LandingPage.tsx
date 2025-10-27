@@ -13,7 +13,7 @@ const LandingScreen = ({ route }) => {
   const navigation = useNavigation();
   const { userID } = route.params;
   const db = useSQLiteContext();
-
+//check
   useEffect(() => {
     fetchDailyWord();
     getVocabHistoryID();
